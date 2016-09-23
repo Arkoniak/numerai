@@ -1,0 +1,144 @@
+---
+title: "numerai"
+author: "Андрей Оськин"
+date: "23 09 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  error = FALSE)
+```
+
+```{r echo=FALSE,results='asis'}
+cat(
+"
+<style type=\"text/css\">
+body {
+  color: #586e75;
+	background-color: #eee8d5;
+}
+</style>")
+```
+
+# Введение
+<http://fastml.com/numerai-like-kaggle-but-with-a-clean-dataset-top-ten-in-the-money-and-recurring-payouts/>
+
+# Подготовка к работе
+
+
+## Подготовка к работе
+
+Перед началом работы загрузим необходимые библиотеки и настроим рабочее окружение.
+```{r utils_setup, results='hide', message=FALSE}
+library(readr)
+library(stringr)
+library(dplyr)
+library(knitr)
+library(pander)
+library(magrittr)
+library(tidyr)
+library(ggplot2)
+library(ggthemes)
+library(parallel)
+library(doParallel)
+library(reshape2)
+library(caret)
+library(xgboost)
+#library(plotly)
+#library(GGally)
+
+options(stringsAsFactors = FALSE)
+panderOptions('digits', 2)
+panderOptions('round', 3)
+panderOptions('keep.trailing.zeros', TRUE)
+
+ggplot <- function(data, mapping) {
+  ggplot2::ggplot(data, mapping) + theme_bw() +
+    theme(
+      panel.border = element_blank(),
+      axis.line.x = element_line(colour = "black", size = 0.2), 
+      axis.line.y = element_line(colour = "black", size = 0.2))
+}
+
+no_cores <- detectCores()
+no_cores <- ifelse(no_cores == 1, no_cores, no_cores - 1)
+cl <- makeCluster(no_cores)
+```
+
+# Подготовка данных
+```{r}
+numerai_train <- read_csv("data/numerai_training_data.csv") %>% mutate(target = factor(ifelse(target == 0, "N", "Y")))
+numerai_tournament <- read_csv("data/numerai_tournament_data.csv")
+```
+
+Корреляционная матрица
+```{r fig.width = 8, fig.height = 8}
+reorder_cormat <- function(cormat) {
+  dd <- as.dist((1 - cormat)/2)
+  hc <- hclust(dd)
+  cormat <- cormat[hc$order, hc$order]
+}
+
+numerai_train %>% select(-target) %>% cor %>% reorder_cormat %>% melt %>%
+{
+  ggplot(., aes(x = Var1, y = Var2, fill = value)) + geom_tile(color = "white") +
+    scale_fill_gradient2(low = "slateblue", high = "red", mid = "white",
+                         midpoint = 0, limit = c(-1, 1), space = "Lab") +
+    theme(
+      axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
+      axis.title.x = element_blank(),
+      axis.title.y = element_blank()) + coord_fixed()
+  #ggplotly()  
+}
+```
+
+Данные сбалансированы
+```{r}
+numerai_train %>% dplyr::summarise(n = n(), cnt1 = sum(target == 1), pp = sum(target == 1)/n()) %>% pander
+```
+
+```{r}
+set.seed(2016)
+idx <- createDataPartition(numerai_train$target, p = 0.8, list = F)
+
+train <- dplyr::slice(numerai_train, idx)
+test <- dplyr::slice(numerai_train, -idx)
+```
+
+```{r}
+ctrl <- trainControl(
+  method = "cv",
+  repeats = 5,
+  number = 5,
+  classProbs = T,
+  verboseIter = T,
+  summaryFunction = twoClassSummary
+)
+
+model.xgboost <- train(
+  target ~ .,
+  data = train,
+  method = "xgbTree",
+  trControl = ctrl,
+  #tuneGrid = modelGrid,
+  metric = "ROC"
+)
+```
+
+```{r}
+ggplot(model.xgboost)
+
+testClasses <- predict(model.xgboost, newdata = test)
+confusionMatrix(data = testClasses, test$target)
+
+test_probs <- predict(model.xgboost, newdata = test, type = "prob")
+roc_info <- roc(test$target ~ test_probs$Y)
+plot(roc_info)
+```
+# Системные сведения
+```{r session_info, include=TRUE, echo=TRUE, results='markup'}
+devtools::session_info()
+```
